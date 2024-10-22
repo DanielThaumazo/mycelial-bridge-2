@@ -1,0 +1,12 @@
+Take the following Zoom transcript and give me a detailed summary.
+
+After the summary, give a breakdown of:
+
+- Action Items
+
+- Key Questions
+
+- Countrary Thinking (challenges to the ideas presented)
+
+Transcript:
+{{transcript}}
