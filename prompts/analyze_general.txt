@@ -1,12 +1,14 @@
-Take the following Zoom transcript and give me a detailed summary.
+Take the following Zoom transcript and give me a detailed summary. Use formatting suitable to be copy/pasted into a GoogleDoc. Do not use Headers, but other formatting is fine.
 
-After the summary, give a breakdown of:
+After a detailed general summary, give a breakdown of:
 
 - Action Items
 
 - Key Questions
 
-- Countrary Thinking (challenges to the ideas presented)
+- Contrary Thinking (challenges to the ideas presented)
+
+Ensure you capture each action item, and that the summary captures the conversation surrounding each action item sufficiently.
 
 Transcript:
 {{transcript}}

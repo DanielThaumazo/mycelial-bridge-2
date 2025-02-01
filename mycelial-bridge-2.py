@@ -66,7 +66,7 @@ def generate_summary(transcription_text):
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": prompt}
         ],
-        max_tokens=500,
+        max_tokens=16000,
     )
     return response['choices'][0]['message']['content'].strip()
 
@@ -104,13 +104,52 @@ def create_google_doc(title, transcription, summary):
     
     return f"https://docs.google.com/document/d/{document_id}/edit"
 
+def share_google_doc(document_id, email_addresses):
+    """Share the Google Doc with the email addresses as editors."""
+    # Load credentials from token.pickle
+    with open('token.pickle', 'rb') as token:
+        creds = pickle.load(token)
+
+    service = build('drive', 'v3', credentials=creds)
+
+    # Share the document with each email address as an editor
+    for email in email_addresses:
+        batch_request = {
+            'role': 'writer',  # Giving edit permissions
+            'type': 'user',
+            'emailAddress': email
+        }
+        service.permissions().create(
+            fileId=document_id,
+            body=batch_request,
+            sendNotificationEmail=True  # Sends email notification to users
+        ).execute()
+
+def extract_emails_from_attending_relation(attending_relation):
+    """Extract email addresses from the 'Attending' relation entries."""
+    email_addresses = []
+    
+    for item in attending_relation:
+        # Fetch the related page details
+        related_page_id = item['id']
+        related_page = notion.pages.retrieve(related_page_id)
+        
+        # Assuming the email field in the related page is called "Email"
+        email_property = related_page['properties'].get('Email')
+        
+        if email_property and 'email' in email_property:
+            email_addresses.append(email_property['email'])
+    
+    return email_addresses
+
+
 def process_notion_entries():
     """Process each entry in the Notion database."""
     entries = get_notion_entries()
     for entry in entries:
         # Print all keys to debug if needed
         print(entry['properties'].keys())
-        
+
         # Get the YouTube URL from the 'Recording' field
         video_url = entry['properties']['Recording']['url']
         video_id = video_url.split('v=')[1]  # Assuming typical YouTube URL format
@@ -123,6 +162,23 @@ def process_notion_entries():
             title = entry['properties']['Name']['title'][0]['text']['content']  
             google_doc_url = create_google_doc(title, transcription, summary)
             print(f"Created Google Doc: {google_doc_url}")
+
+            # Extract the document ID from the URL
+            document_id = google_doc_url.split("/d/")[1].split("/")[0]
+
+            # Get the Attending relation field
+            attending_relation = entry['properties']['Attending']['relation']
+
+            if attending_relation:
+                # Extract emails from the Attending relation
+                email_addresses = extract_emails_from_attending_relation(attending_relation)
+                print("Extracted Email Addresses:", email_addresses)
+
+                # Share the document with the attendees as editors
+                if email_addresses:
+                    share_google_doc(document_id, email_addresses)
+            else:
+                print("No related emails found in the 'Attending' relation.")
 
             # Update the Notion entry with the generated Google Doc URL
             notion.pages.update(
@@ -138,6 +194,7 @@ def process_notion_entries():
                     }
                 }
             )
+
 
 if __name__ == "__main__":
     process_notion_entries()
