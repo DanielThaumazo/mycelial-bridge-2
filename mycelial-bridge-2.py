@@ -1,6 +1,8 @@
 import os
+import time
 import openai
 import pickle
+import logging
 from langchain_community.llms import OpenAI
 from langchain.chains import LLMChain
 from notion_client import Client as NotionClient
@@ -11,6 +13,9 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Get credentials from .env file
 NOTION_API_KEY = os.getenv('NOTION_API_KEY')
@@ -25,176 +30,128 @@ openai.api_key = OPENAI_API_KEY
 
 def get_notion_entries():
     """Retrieve entries from Notion that are marked 'Ready for Analysis'."""
-    response = notion.databases.query(
-        **{
-            "database_id": DATABASE_ID,
-            "filter": {
-                "property": "Status",
-                "select": {
-                    "equals": "Ready for Analysis"
+    try:
+        response = notion.databases.query(
+            **{
+                "database_id": DATABASE_ID,
+                "filter": {
+                    "property": "Status",
+                    "select": {
+                        "equals": "Ready for Analysis"
+                    }
                 }
             }
-        }
-    )
-    return response["results"]
-
-def get_youtube_transcription(video_id):
-    """Retrieve the transcription from a YouTube video."""
-    try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
-        text = " ".join([entry['text'] for entry in transcript])
-        return text
+        )
+        return response["results"]
     except Exception as e:
-        print(f"Error retrieving transcription: {e}")
-        return None
+        logging.error(f"Error retrieving Notion entries: {e}")
+        return []
+
+def get_youtube_transcription(video_id, retries=3):
+    """Retrieve the transcription from a YouTube video with retry logic."""
+    for attempt in range(retries):
+        try:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id)
+            return " ".join([entry['text'] for entry in transcript])
+        except Exception as e:
+            logging.warning(f"Attempt {attempt + 1} - Error retrieving transcription: {e}")
+            time.sleep(5)  # Short delay before retrying
+    return None
 
 def load_prompt():
     """Load the prompt template from the 'prompts/analyze_general.txt' file."""
-    prompt_file_path = os.path.join("prompts", "analyze_general.txt")
-    with open(prompt_file_path, "r") as file:
-        prompt_template = file.read()
-    return prompt_template
+    try:
+        with open(os.path.join("prompts", "analyze_general.txt"), "r") as file:
+            return file.read()
+    except Exception as e:
+        logging.error(f"Error loading prompt file: {e}")
+        return None
 
 def generate_summary(transcription_text):
     """Generate a summary of the transcription using OpenAI."""
     prompt_template = load_prompt()
+    if not prompt_template:
+        return None
+    
     prompt = prompt_template.replace("{{transcript}}", transcription_text)
-
-    response = openai.ChatCompletion.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=16000,
-    )
-    return response['choices'][0]['message']['content'].strip()
-
-def create_google_doc(title, transcription, summary):
-    """Create a Google Doc with the transcription and summary."""
-    # Load credentials from token.pickle
-    with open('token.pickle', 'rb') as token:
-        creds = pickle.load(token)
     
-    service = build('docs', 'v1', credentials=creds)
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=16000,
+        )
+        return response['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        logging.error(f"Error generating summary: {e}")
+        return None
 
-    # Create a new Google Doc
-    document = service.documents().create(body={
-        'title': title
-    }).execute()
-
-    document_id = document.get('documentId')
-
-    # Insert the transcription and summary into the document
-    #text = f"### Transcription ###\n{transcription}\n\n### Summary ###\n{summary}"
-    text = f"### Summary ###\n{summary}"
-    requests = [
-        {
-            'insertText': {
-                'location': {
-                    'index': 1,
-                },
-                'text': text
-            }
-        }
-    ]
-
-    # Update the document with the transcription and summary
-    service.documents().batchUpdate(documentId=document_id, body={'requests': requests}).execute()
-    
-    return f"https://docs.google.com/document/d/{document_id}/edit"
-
-def share_google_doc(document_id, email_addresses):
-    """Share the Google Doc with the email addresses as editors."""
-    # Load credentials from token.pickle
-    with open('token.pickle', 'rb') as token:
-        creds = pickle.load(token)
-
-    service = build('drive', 'v3', credentials=creds)
-
-    # Share the document with each email address as an editor
-    for email in email_addresses:
-        batch_request = {
-            'role': 'writer',  # Giving edit permissions
-            'type': 'user',
-            'emailAddress': email
-        }
-        service.permissions().create(
-            fileId=document_id,
-            body=batch_request,
-            sendNotificationEmail=True  # Sends email notification to users
-        ).execute()
-
-def extract_emails_from_attending_relation(attending_relation):
-    """Extract email addresses from the 'Attending' relation entries."""
-    email_addresses = []
-    
-    for item in attending_relation:
-        # Fetch the related page details
-        related_page_id = item['id']
-        related_page = notion.pages.retrieve(related_page_id)
-        
-        # Assuming the email field in the related page is called "Email"
-        email_property = related_page['properties'].get('Email')
-        
-        if email_property and 'email' in email_property:
-            email_addresses.append(email_property['email'])
-    
-    return email_addresses
-
+def create_google_doc(title, summary):
+    """Create a Google Doc with the summary."""
+    try:
+        with open('token.pickle', 'rb') as token:
+            creds = pickle.load(token)
+        service = build('docs', 'v1', credentials=creds)
+        document = service.documents().create(body={'title': title}).execute()
+        document_id = document.get('documentId')
+        text = f"### Summary ###\n{summary}"
+        requests = [{'insertText': {'location': {'index': 1}, 'text': text}}]
+        service.documents().batchUpdate(documentId=document_id, body={'requests': requests}).execute()
+        return f"https://docs.google.com/document/d/{document_id}/edit"
+    except Exception as e:
+        logging.error(f"Error creating Google Doc: {e}")
+        return None
 
 def process_notion_entries():
-    """Process each entry in the Notion database."""
-    entries = get_notion_entries()
-    for entry in entries:
-        # Print all keys to debug if needed
-        print(entry['properties'].keys())
-
-        # Get the YouTube URL from the 'Recording' field
-        video_url = entry['properties']['Recording']['url']
-        video_id = video_url.split('v=')[1]  # Assuming typical YouTube URL format
-        transcription = get_youtube_transcription(video_id)
-
-        if transcription:
-            summary = generate_summary(transcription)
-
-            # Get the title of the document from the 'Name' field
-            title = entry['properties']['Name']['title'][0]['text']['content']  
-            google_doc_url = create_google_doc(title, transcription, summary)
-            print(f"Created Google Doc: {google_doc_url}")
-
-            # Extract the document ID from the URL
-            document_id = google_doc_url.split("/d/")[1].split("/")[0]
-
-            # Get the Attending relation field
-            attending_relation = entry['properties']['Attending']['relation']
-
-            if attending_relation:
-                # Extract emails from the Attending relation
-                email_addresses = extract_emails_from_attending_relation(attending_relation)
-                print("Extracted Email Addresses:", email_addresses)
-
-                # Share the document with the attendees as editors
-                if email_addresses:
-                    share_google_doc(document_id, email_addresses)
-            else:
-                print("No related emails found in the 'Attending' relation.")
-
-            # Update the Notion entry with the generated Google Doc URL
-            notion.pages.update(
-                page_id=entry['id'],
-                properties={
-                    'Status': {
-                        'select': {
-                            'name': 'Processed'
-                        }
-                    },
-                    'Auto-Outputs': {
-                        'url': google_doc_url
+    """Continuously processes entries in Notion."""
+    while True:
+        entries = get_notion_entries()
+        if not entries:
+            logging.info("No new entries found. Sleeping for 5 minutes...")
+            time.sleep(300)  # Wait 5 minutes before checking again
+            continue
+        
+        for entry in entries:
+            try:
+                logging.info(f"Processing entry: {entry['id']}")
+                video_url = entry['properties']['Recording']['url']
+                video_id = video_url.split('v=')[1] if "v=" in video_url else None
+                if not video_id:
+                    logging.warning("Invalid YouTube URL format. Skipping entry.")
+                    continue
+                
+                transcription = get_youtube_transcription(video_id)
+                if not transcription:
+                    logging.warning("Failed to retrieve transcription. Skipping entry.")
+                    continue
+                
+                summary = generate_summary(transcription)
+                if not summary:
+                    logging.warning("Failed to generate summary. Skipping entry.")
+                    continue
+                
+                title = entry['properties']['Name']['title'][0]['text']['content']
+                google_doc_url = create_google_doc(title, summary)
+                if not google_doc_url:
+                    logging.warning("Failed to create Google Doc. Skipping entry.")
+                    continue
+                
+                logging.info(f"Successfully created Google Doc: {google_doc_url}")
+                notion.pages.update(
+                    page_id=entry['id'],
+                    properties={
+                        'Status': {'select': {'name': 'Processed'}},
+                        'Auto-Outputs': {'url': google_doc_url}
                     }
-                }
-            )
-
+                )
+            except Exception as e:
+                logging.error(f"Error processing entry {entry['id']}: {e}")
+            
+            logging.info("Waiting 30 seconds before processing next entry...")
+            time.sleep(30)  # Avoid rate limits
 
 if __name__ == "__main__":
     process_notion_entries()
